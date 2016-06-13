@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+
+    <title>Eulerian magnification of video feed</title>
+
+    <meta name="description" content="Talk presenting setup of raspberry pi camera to capture video feed and magnify small movements">
+    <meta name="author" content="James Cantwell">
+
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, minimal-ui">
+
+    <link rel="stylesheet" href="css/reveal.css">
+    <link rel="stylesheet" href="css/theme/league.css" id="theme">
+
+    <!-- Code syntax highlighting -->
+    <link rel="stylesheet" href="lib/css/zenburn.css">
+
+    <!-- Printing and PDF exports -->
+    <script>
+        var link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.type = 'text/css';
+        link.href = window.location.search.match(/print-pdf/gi) ? 'css/print/pdf.css' : 'css/print/paper.css';
+        document.getElementsByTagName('head')[0].appendChild(link);
+    </script>
+
+    <!--[if lt IE 9]>
+    <script src="lib/js/html5shiv.js"></script>
+    <![endif]-->
+</head>
+
+<body>
+
+<div class="reveal">
+
+    <!-- Any section element inside of this container is displayed as a slide -->
+    <div class="slides">
+        <section>
+            <h1>Eulerian magnification of video feed</h1>
+            <p style="text-align: right;">
+                <small>
+                   Hackday 2016
+                </small>
+            </p>
+        </section>
+
+        <section
+                data-transition="zoom"
+        >
+            <h4>Errors will happen - have to handle the sad path</h4>
+            <img
+                    style="border-radius: 10px;"
+                    width="820" height="540" data-src="img/error-rage.jpg"
+                 alt="Dealing with errors"/>
+
+            <aside class="notes">
+                <p>
+                  The idea for this project was to create a baby camera that could reasure parnoid parents that their baby was alive by magnifying tiny breathing movements.
+                  The algorithm for performing the magnifying was taken from a paper Eulerian Video Magnification. In that paper the author presents how
+                  hidden information and insight can be gained from amplifying tiny movements that are invisible to the naked eye. For example some of the applications
+                  described in the paper are taking a persons pulse just by observing how the color of their face changes on each beat.
+                  https://www.youtube.com/watch?v=sM6gBEVwvR4
+                </p>
+            </aside>
+        </section>
+
+        <section>
+            <h4>Available options</h4>
+            <small>
+                <ul>
+		    <li>Crash</li>
+                    <li>Throw exception</li>
+                    <li>Recover, keep going</li>
+                    <li>Return special value</li>
+                </ul>
+            </small>
+
+            <aside class="notes">
+                <p>
+                Much of the content taken from a talk Chris Houser gave a Clojure/conj 2015.
+                Try to quickly summarize the important points from that talk and also take a quick look at returning special values.
+                The idomatic approach in clojure seems to be to use throw exceptions and use try catch. This works well for unrecoverable errors but not great if you want to recover from the error
+                </p>
+            </aside>
+        </section>
+
+        <section>
+            <h3>
+               The problem with try catch
+            </h3>
+
+           <pre><code data-trim data-noescape>
+(defn check-for-lucky-number [n]
+  (if (#{4 14 24} n)
+    n
+    (throw (ex-info "unlucky number" {:number n}))))
+
+(try
+  (mapv check-for-lucky-number (range 20))
+  (catch RuntimeException e
+    "Not much we can do to recover here"))
+	      </code></pre>
+
+            <aside class="notes">
+	      When you throw an exception you leave the current stack. This context is often needed to be able to recover.
+	      Matching on exception type hierarchy which feels a little clumsey.
+            </aside>
+        </section>
+
+        <section>
+            <h4>Condition Systems</h4>
+            <p>Higher level functions specify what action to take in response to an error, the action implementation is provided by the calling function.</p>
+            <p>Errors are handled <em>when and where</em> they occur rather than catching an exception far away from the origin where we can't to do anything about it.<p>
+        </section>
+
+        <section>
+            <h3>
+               Using Swell and Slingshot to define restarts
+            </h3>
+
+           <pre><code data-trim data-noescape>
+(ns error-handling-test.condition-system
+  (:require [slingshot.core :refer [throw+]]
+            [swell.api :refer [
+	      restart-case
+	      handler-bind
+	      invoke-restart]]))
+
+
+
+(defn check-for-lucky-number [n]
+  (if (#{4 14 24} n)
+    n
+    (restart-case
+      [
+        :try-again (fn [value]
+		(println "trying again with "value)
+		(check-for-lucky-number value))
+        :treat-as-lucky (fn []
+		(println "treating the value as lucky")
+		n)
+        :skip (fn []
+                (println "Returning dash instead")
+                "-")
+        ]
+      (throw+ {:type ::unlucky-number :number n}
+		"Landed on unlucky number"))
+    ))
+
+
+
+(defn lucky-number? [n]
+  (handler-bind
+    [#(= ::unlucky-number (:type %))
+     (fn [e]
+       ;;choose the restart appropriate for the error
+       ;; could also rethrow error
+       (invoke-restart
+         :try-again (rand-int 10)
+         ))]
+       (if (check-for-lucky-number n) "YES")))
+           </code></pre>
+        </section>
+
+         <section>
+            <h3>
+               Using Swell and Slingshot
+            </h3>
+
+           <pre><code data-trim data-noescape>
+
+;;Instead of an error being raised the
+;;check-for-lucky-number function is called
+;;with different values until it finds a lucky number
+(lucky-number? 16)
+
+;;Without binding a restart all we just know
+;;something went wrong
+(try
+  (mapv check-for-lucky-number (range 20))
+  (catch RuntimeException e
+    "Unlucky number in the sequence"))
+
+
+;;Using restarts we can handle the error
+;;appropriately at the point it occurred
+(defn lucky-numbers? []
+  (handler-bind
+    [#(= ::unlucky-number (:type %))
+     (fn [e]
+       (invoke-restart
+         :skip
+         ))]
+    (mapv check-for-lucky-number (range 20))))
+
+(lucky-numbers?)
+
+
+	      </code></pre>
+	       <aside class="notes">
+                <p>
+              There are a number of different condition system libraries.
+              error-kit
+	      slingshot and swell
+	      ribol (now part of hara)
+	      bwo/conditions
+
+	      The fact that it is not part of the language means that if you are building a library you can assume the client code will be using the same condition system library.
+                </p>
+            </aside>
+        </section>
+
+
+        <section>
+	  <h3>Dynamic binding</h3>
+            <pre><code data-trim data-noescape>
+            ;; ==== errors ===
+(defn ^:dynamic *unlucky-number-error* [msg info]
+  (throw (ex-info msg info)))
+
+;; === restart ===
+(defn ^:dynamic *treat-as-lucky* [value]
+  (throw (ex-info "Restart *treat-as-lucky* is unbound.")))
+
+(defn ^:dynamic *try-again* [value]
+  (throw (ex-info "Restart *try-again* is unbound.")))
+
+(defn ^:dynamic *skip* [value]
+  (throw (ex-info "Restart *skip* is unbound.")))
+
+(defn check-for-lucky-number [n]
+  (if (#{4 13 14 24} n)
+    n
+    (binding [*treat-as-lucky* identity
+              *try-again* (fn [value]
+		  (println "trying again with "value)
+		  (check-for-lucky-number value))
+              *skip* (fn [] "-")]
+       (*unlucky-number-error*
+          "Landed on unlucky number"
+          {:number n}))))
+
+
+(defn am-I-lucky? [n]
+;;outer function chooses what restart to call based on the error
+   (binding [*unlucky-number-error*
+            (fn [msg info]
+              (*try-again* (rand-int 10)))]
+     (if (check-for-lucky-number n) "YES")))
+
+(am-I-lucky? 41)
+
+;;Without binding a restart all we just know something went wrong
+(try
+  (mapv check-for-lucky-number (range 20))
+  (catch RuntimeException e
+    "Unlucky number in the sequence"))
+
+;;Using restarts we can handle the error
+;;appropriately at the point it occurred
+(defn lucky-numbers? []
+  (binding [*unlucky-number-error*
+            (fn [msg info]
+              (*skip*))]
+    (mapv check-for-lucky-number (range 20))))
+
+(lucky-numbers?)
+ </code></pre>
+        </section>
+
+         <section>
+            <h4>Side effects</h4>
+            <p>Exceptions are side effects. Makes it difficult to compose functions when you have a backchannel result. Using special return values makes the error conditions we expect to handle more explicit.</p>
+            <small>
+                <ul>
+		    <li>nil</li>
+                    <li>Maybe</li>
+                    <li>Either</li>
+                    <li>Validation</li>
+                </ul>
+            </small>
+        </section>
+
+
+        <section>
+	  <h3>Either monad</h3>
+            <pre><code data-trim data-noescape>
+(ns error-handling-test.monads
+  (require [cats.core :as m])
+  (require [cats.builtin])
+  (require [cats.monad.either :as either])
+  (require [cats.monad.maybe :as maybe]))
+
+
+(defn value-set [value]
+  (if (nil? value)
+    (either/left "Required value")
+    (either/right value)))
+
+
+(defn valid-email [value]
+  (if (re-matches #"\S+@\S+\.\S+" value)
+     (either/right value)
+     (either/left "invalid email")))
+
+(defn valid-zip-code [zipCode]
+  (if (re-matches #"\d{5}" zipCode)
+      (either/right zipCode)
+      (either/left "invalid zip code")))
+
+(let [contact {:name "batman"
+               :email "batman99@gmail.com"
+               :zipCode "12345"}]
+  (pr-str
+    (m/mlet [ valueSet (value-set (:name contact))
+              email (valid-email (:email contact))
+              zip (valid-zip-code (:zipCode contact))]
+            contact)))
+
+(let [contact {:name nil
+               :email "batman99@gmail.com"
+               :zipCode "12345678"}]
+  (pr-str
+    (m/mlet [ valueSet (value-set (:name contact))
+              email (valid-email (:email contact))
+              zip (valid-zip-code (:zipCode contact))]
+            contact)))
+	    </code></pre>
+	    <aside class="notes">
+                <p>
+                Maybe: represents the posible absence of a value.
+                Similar behavior that we get from Maybe can be achieved through nil, eg. theading can shortcircuit using something
+                Either: represents a succcesful or errorful value
+             cats is a library of category theory and algebraic abstractions for Clojure and ClojureScript.
+             mlet - similar to for but can work with arbitary monads rather that just lists.
+                </p>
+            </aside>
+        </section>
+
+
+       <section>
+	  <h3>Validation applicative</h3>
+            <pre><code data-trim data-noescape>
+(ns error-handling-test.monads
+  (require [cats.core :as m])
+  (require [cats.builtin])
+  (require [cats.applicative.validation :as v]))
+
+(defn value-set [value]
+  (if (nil? value)
+    (v/fail {:required "Required value"})
+    (v/ok value)))
+
+(defn valid-email [value]
+  (if (re-matches #"\S+@\S+\.\S+" value)
+     (v/ok value)
+     (v/fail {:email "invalid email"})))
+
+(defn valid-zip-code [zipCode]
+  (if (re-matches #"\d{5}" zipCode)
+      (v/ok zipCode)
+      (v/fail {:zipCode "invalid zip code"})))
+
+
+(let [contact {:name "batman"
+               :email "batman99@gmail.com"
+               :zipCode "12345"}]
+  (pr-str
+    (m/alet [ valueSet (value-set (:name contact))
+              email (valid-email (:email contact))
+              zip (valid-zip-code (:zipCode contact))]
+            contact)))
+
+;;unlike Either, aggregates failure values
+  (let [contact {:name nil
+                 :email "batman99@gmail.com"
+                 :zipCode "123456"}]
+    (pr-str
+      (m/alet [ valueSet (value-set (:name contact))
+                email (valid-email (:email contact))
+                zip (valid-zip-code (:zipCode contact))]
+              contact)))
+
+	    </code></pre>
+
+
+        </section>
+
+        <section>
+            <h1>Thank you!</h1>
+
+            <p>Questions?</p>
+
+        </section>
+
+    </div>
+
+</div>
+
+<script src="lib/js/head.min.js"></script>
+<script src="js/reveal.js"></script>
+
+<script>
+
+    // Full list of configuration options available at:
+    // https://github.com/hakimel/reveal.js#configuration
+    Reveal.initialize({
+        controls: true,
+        progress: true,
+        history: true,
+        center: true,
+
+        transition: 'slide', // none/fade/slide/convex/concave/zoom
+
+        // Optional reveal.js plugins
+        dependencies: [
+            {
+                src: 'lib/js/classList.js', condition: function () {
+                return !document.body.classList;
+            }
+            },
+            {
+                src: 'plugin/markdown/marked.js', condition: function () {
+                return !!document.querySelector('[data-markdown]');
+            }
+            },
+            {
+                src: 'plugin/markdown/markdown.js', condition: function () {
+                return !!document.querySelector('[data-markdown]');
+            }
+            },
+            {
+                src: 'plugin/highlight/highlight.js', async: true, callback: function () {
+                hljs.initHighlightingOnLoad();
+            }
+            },
+            {src: 'plugin/zoom-js/zoom.js', async: true},
+            {src: 'plugin/notes/notes.js', async: true}
+        ]
+    });
+
+</script>
+
+</body>
+</html>
